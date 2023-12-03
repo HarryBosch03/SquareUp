@@ -1,7 +1,10 @@
+using System;
+using System.Collections.Generic;
 using SquareUp.Runtime.Weapons;
 using UnityEditor.Experimental;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Utilities;
 using UnityEngine.Serialization;
 using Random = UnityEngine.Random;
 
@@ -11,6 +14,8 @@ namespace SquareUp.Runtime.Player
     public sealed class PlayerController : MonoBehaviour
     {
         public InputActionAsset inputAsset;
+        public bool lookWithMouse = true;
+        public float gamepadCursorOffset = 5.0f;
 
         [Space]
         public float moveSpeed = 10.0f;
@@ -22,7 +27,7 @@ namespace SquareUp.Runtime.Player
         [Space]
         public float jumpHeight = 2.0f;
         public float wallJumpForce = 5.0f;
-        [FormerlySerializedAs("wallJumpDrag")] public float wallSlideForce = 5.0f;
+        public float wallSlideForce = 5.0f;
         public float upGravity = 2.0f;
         public float downGravity = 3.0f;
 
@@ -48,6 +53,7 @@ namespace SquareUp.Runtime.Player
         private Rigidbody2D body;
 
         private InputAction moveAction;
+        private InputAction lookAction;
         private InputAction jumpAction;
         private InputAction shootAction;
 
@@ -60,36 +66,85 @@ namespace SquareUp.Runtime.Player
 
         private float rotation;
         private Transform visuals;
-        private Transform looking;
-        private Transform muzzle;
+        private Transform center;
+        private Action<Color> setColor;
+
+        private Arm leftArm, rightArm;
+        private Arm primaryArm, secondaryArm;
 
         private Vector2 lookPosition;
+        private Vector2 lookDirection;
         private Camera mainCam;
 
         private float lastFireTime;
+
+        public static readonly List<PlayerController> All = new();
 
         private void Awake()
         {
             body = GetComponent<Rigidbody2D>();
             mainCam = Camera.main;
 
-            visuals = transform.Find("Looking");
-            looking = transform.Find("Looking");
-            muzzle = looking.Find("Muzzle");
+            visuals = transform.Find("Visuals");
+            center = transform.Find("Center");
 
+            leftArm = new Arm(transform, 'L');
+            rightArm = new Arm(transform, 'R');
+
+            inputAsset = Instantiate(inputAsset);
             inputAsset.Enable();
             moveAction = inputAsset.FindAction("Move");
+            lookAction = inputAsset.FindAction("Look");
             jumpAction = inputAsset.FindAction("Jump");
             shootAction = inputAsset.FindAction("Shoot");
 
+            SetupColorFunc();
+            setColor(Color.HSVToRGB(Random.Range(0, 16) / 16.0f, 0.8f, 0.8f));
+            
             foreach (var t in GetComponentsInChildren<Transform>())
             {
                 t.gameObject.layer = 7;
             }
         }
 
+        private void SetupColorFunc()
+        {
+            var body = visuals.Find<SpriteRenderer>("Body");
+            var bodyBaseColor = body.color;
+
+            var armBaseColorL = leftArm.arm.startColor;
+            var armBaseColorR = rightArm.arm.startColor;
+            
+            setColor = color =>
+            {
+                body.color = bodyBaseColor * color;
+                
+                leftArm.arm.startColor = armBaseColorL * color;
+                leftArm.arm.endColor = leftArm.arm.startColor;
+                
+                rightArm.arm.startColor = armBaseColorR * color;
+                rightArm.arm.endColor = rightArm.arm.startColor;
+            };
+        }
+
+        private void OnEnable() { All.Add(this); }
+
+        private void OnDisable() { All.Remove(this); }
+
+        public void BindInput(InputDevice device)
+        {
+            inputAsset.devices = new InputDevice[] { device };
+            lookWithMouse = device is Keyboard;
+        }
+
         private void FixedUpdate()
         {
+            primaryArm = lookDirection.x > 0.0f ? rightArm : leftArm;
+            secondaryArm = lookDirection.x > 0.0f ? leftArm : rightArm;
+
+            primaryArm.Update(lookPosition);
+            secondaryArm.Update((Vector2)center.position + new Vector2(lookDirection.x > 0.0f ? -1 : 1, 0.0f));
+
             Move();
             Jump();
             Shoot();
@@ -97,9 +152,8 @@ namespace SquareUp.Runtime.Player
             Collide();
             SetGravity();
             Reload();
-            
-            var dir = lookPosition - body.position;
-            rotation = Mathf.Lerp(dir.x > 0.0f ? 1 : -1, rotation, animationSmoothing);
+
+            rotation = Mathf.Lerp(lookDirection.x > 0.0f ? 1 : -1, rotation, animationSmoothing);
 
             jumpFlag = false;
             shootFlag = false;
@@ -136,14 +190,15 @@ namespace SquareUp.Runtime.Player
             {
                 if (!shootAction.IsPressed()) return;
             }
-            
+
             if (Time.time - lastFireTime < fireDelay) return;
             if (currentAmmo == 0) return;
 
             for (var i = 0; i < projectilesPerShot; i++)
             {
-                var rotation = Mathf.Atan2(muzzle.right.y, muzzle.right.x) * Mathf.Rad2Deg + Random.Range(-spray, spray);
-                Instantiate(projectilePrefab, muzzle.position, Quaternion.Euler(0.0f, 0.0f, rotation));
+                var position = (Vector2)primaryArm.hand.position;
+                var rotation = (lookPosition - position).ToDeg() + Random.Range(-spray, spray);
+                Instantiate(projectilePrefab, position, rotation.AsRotation());
             }
 
             lastFireTime = Time.time;
@@ -156,16 +211,25 @@ namespace SquareUp.Runtime.Player
         {
             if (jumpAction.WasPerformedThisFrame()) jumpFlag = true;
             if (shootAction.WasPerformedThisFrame()) shootFlag = true;
-            lookPosition = GetMousePosition();
-            looking.rotation = (lookPosition - body.position).AsRotation();
+
+            var center = (Vector2)this.center.position;
+            if (lookWithMouse)
+            {
+                lookPosition = GetMousePosition();
+                lookDirection = (lookPosition - center).normalized;
+            }
+            else
+            {
+                var input = lookAction.ReadValue<Vector2>();
+                if (input.magnitude > 0.2f) lookDirection = input;
+
+                lookPosition = lookDirection * gamepadCursorOffset + center;
+            }
         }
 
         private void LateUpdate() { Animate(); }
 
-        private void Animate()
-        {
-            visuals.rotation = Quaternion.Euler(0.0f, rotation * 90.0f - 90.0f, 0.0f);
-        }
+        private void Animate() { visuals.rotation = Quaternion.Euler(0.0f, rotation * 90.0f - 90.0f, 0.0f); }
 
         private Vector2 GetMousePosition() => mainCam.ScreenToWorldPoint(Mouse.current.position.ReadValue());
 
