@@ -11,10 +11,15 @@ namespace SquareUp.Runtime.Weapons
         public float speed = 30.0f;
         public float lifetime = 10.0f;
         public float trailPostLifetime = 1.0f;
+        public float ghostDistance = 0.5f;
+        
+        [Space]
+        public Transform hitFx;
 
         private float age;
+        private float distanceTraveled;
         private Transform trail;
-        
+
         private Vector2 position;
         private Vector2 velocity;
         private Vector2 force;
@@ -34,16 +39,32 @@ namespace SquareUp.Runtime.Weapons
         {
             Collide();
             Iterate();
+            
+            transform.rotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(velocity.y, velocity.x) * Mathf.Rad2Deg);
         }
 
         private void Collide()
         {
             var step = velocity.magnitude * Time.deltaTime;
             var direction = velocity.normalized;
+            var start = position;
 
-            var hit = Physics2D.Raycast(position, direction, step * 1.01f);
+            if (distanceTraveled < ghostDistance)
+            {
+                if (distanceTraveled + step < ghostDistance) return;
+                var shrink = ghostDistance - distanceTraveled;
+                start += direction * shrink;
+                step -= shrink;
+            }
+
+            var hit = Physics2D.Raycast(start, direction, step * 1.01f);
+            Debug.DrawRay(start, direction * step, Color.red);
             if (!hit) return;
 
+            if (hitFx)
+            {
+                Instantiate(hitFx, hit.point, Vector2.Reflect(direction, hit.normal).AsRotation());
+            }
             Destroy();
         }
 
@@ -51,6 +72,8 @@ namespace SquareUp.Runtime.Weapons
         {
             position += velocity * Time.deltaTime;
             velocity += force * Time.deltaTime;
+
+            distanceTraveled += velocity.magnitude * Time.deltaTime;
 
             force = Physics.gravity;
             transform.position = position;
@@ -64,9 +87,12 @@ namespace SquareUp.Runtime.Weapons
 
         private void Destroy()
         {
-            trail.SetParent(null);
-            Destroy(trail.gameObject, trailPostLifetime);
-            
+            if (trail)
+            {
+                trail.SetParent(null);
+                Destroy(trail.gameObject, trailPostLifetime);
+            }
+
             Destroy(gameObject);
         }
     }

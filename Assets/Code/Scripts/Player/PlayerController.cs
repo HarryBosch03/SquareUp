@@ -1,7 +1,8 @@
-using System;
 using SquareUp.Runtime.Weapons;
+using UnityEditor.Experimental;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Serialization;
 using Random = UnityEngine.Random;
 
 namespace SquareUp.Runtime.Player
@@ -20,6 +21,8 @@ namespace SquareUp.Runtime.Player
 
         [Space]
         public float jumpHeight = 2.0f;
+        public float wallJumpForce = 5.0f;
+        [FormerlySerializedAs("wallJumpDrag")] public float wallSlideForce = 5.0f;
         public float upGravity = 2.0f;
         public float downGravity = 3.0f;
 
@@ -30,22 +33,26 @@ namespace SquareUp.Runtime.Player
 
         [Space]
         public Projectile projectilePrefab;
-        public float fireDelay = 0.1f;
+        public float fireDelay = 0.4f;
+        public float singleFireDelayThreshold = 0.2f;
         public int projectilesPerShot = 1;
         public float spray = 2.0f;
+        public int maxAmmo = 3;
+        public int currentAmmo;
+        public float reloadTime = 1.0f;
 
         [Space]
         [Range(0.0f, 1.0f)]
         public float animationSmoothing;
 
         private Rigidbody2D body;
-        private Animator animator;
 
         private InputAction moveAction;
         private InputAction jumpAction;
         private InputAction shootAction;
 
         private bool jumpFlag;
+        private bool shootFlag;
         private bool isOnGround;
         private RaycastHit2D groundHit;
         private bool isOnWall;
@@ -53,8 +60,7 @@ namespace SquareUp.Runtime.Player
 
         private float rotation;
         private Transform visuals;
-        private Transform head;
-        private Transform leftArm;
+        private Transform looking;
         private Transform muzzle;
 
         private Vector2 lookPosition;
@@ -65,13 +71,11 @@ namespace SquareUp.Runtime.Player
         private void Awake()
         {
             body = GetComponent<Rigidbody2D>();
-            animator = GetComponent<Animator>();
             mainCam = Camera.main;
 
-            visuals = transform.Find("Visuals");
-            head = visuals.Find("Head");
-            leftArm = visuals.Find("Arm.L");
-            muzzle = visuals.Find("Arm.L/Gun/Muzzle");
+            visuals = transform.Find("Looking");
+            looking = transform.Find("Looking");
+            muzzle = looking.Find("Muzzle");
 
             inputAsset.Enable();
             moveAction = inputAsset.FindAction("Move");
@@ -89,27 +93,61 @@ namespace SquareUp.Runtime.Player
             Move();
             Jump();
             Shoot();
+            WallSlide();
             Collide();
             SetGravity();
-
+            Reload();
+            
             var dir = lookPosition - body.position;
             rotation = Mathf.Lerp(dir.x > 0.0f ? 1 : -1, rotation, animationSmoothing);
 
             jumpFlag = false;
+            shootFlag = false;
+        }
+
+        private void Reload()
+        {
+            if (currentAmmo >= maxAmmo) return;
+            if (Time.time - lastFireTime < reloadTime) return;
+
+            currentAmmo = maxAmmo;
+        }
+
+        private void WallSlide()
+        {
+            var input = moveAction.ReadValue<Vector2>().x;
+            if (isOnWall && input * wallHit.normal.x < 0.0f && Mathf.Abs(input) > 0.5f && body.velocity.y < 0.0f)
+            {
+                var force = sqr(Mathf.Max(0.0f, -body.velocity.y)) * wallSlideForce;
+                force = Mathf.Min(force, -body.velocity.y / Time.deltaTime);
+                body.AddForce(Vector2.up * force);
+            }
+
+            float sqr(float x) => x * x;
         }
 
         private void Shoot()
         {
-            if (!shootAction.IsPressed()) return;
+            if (fireDelay > singleFireDelayThreshold)
+            {
+                if (!shootFlag) return;
+            }
+            else
+            {
+                if (!shootAction.IsPressed()) return;
+            }
+            
             if (Time.time - lastFireTime < fireDelay) return;
+            if (currentAmmo == 0) return;
 
             for (var i = 0; i < projectilesPerShot; i++)
             {
-                var rotation = muzzle.eulerAngles.z + Random.Range(-spray, spray);
+                var rotation = Mathf.Atan2(muzzle.right.y, muzzle.right.x) * Mathf.Rad2Deg + Random.Range(-spray, spray);
                 Instantiate(projectilePrefab, muzzle.position, Quaternion.Euler(0.0f, 0.0f, rotation));
             }
 
             lastFireTime = Time.time;
+            currentAmmo--;
         }
 
         private void SetGravity() { body.gravityScale = body.velocity.y > 0.0f ? upGravity : downGravity; }
@@ -117,7 +155,9 @@ namespace SquareUp.Runtime.Player
         private void Update()
         {
             if (jumpAction.WasPerformedThisFrame()) jumpFlag = true;
+            if (shootAction.WasPerformedThisFrame()) shootFlag = true;
             lookPosition = GetMousePosition();
+            looking.rotation = (lookPosition - body.position).AsRotation();
         }
 
         private void LateUpdate() { Animate(); }
@@ -125,15 +165,6 @@ namespace SquareUp.Runtime.Player
         private void Animate()
         {
             visuals.rotation = Quaternion.Euler(0.0f, rotation * 90.0f - 90.0f, 0.0f);
-
-            var headDir = lookPosition - (Vector2)head.position;
-            head.transform.localRotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(headDir.y, Mathf.Abs(headDir.x)) * Mathf.Rad2Deg * 0.6f);
-
-            var armDir = lookPosition - (Vector2)leftArm.position;
-            leftArm.transform.rotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(armDir.y, armDir.x) * Mathf.Rad2Deg + 90.0f) * visuals.rotation;
-
-            animator.SetBool("falling", !isOnGround);
-            animator.SetFloat("movement", isOnGround ? body.velocity.x / moveSpeed : 0.0f);
         }
 
         private Vector2 GetMousePosition() => mainCam.ScreenToWorldPoint(Mouse.current.position.ReadValue());
@@ -160,11 +191,19 @@ namespace SquareUp.Runtime.Player
         private void Jump()
         {
             if (!jumpFlag) return;
-            if (!isOnGround) return;
 
             var gravity = -Physics2D.gravity.y * upGravity;
-            var force = Mathf.Sqrt(2.0f * jumpHeight * gravity);
-            body.velocity += Vector2.up * force;
+            var force = Vector2.up * (Mathf.Sqrt(2.0f * jumpHeight * gravity) - body.velocity.y);
+
+            if (isOnGround)
+            {
+                body.velocity += force;
+            }
+            else if (isOnWall)
+            {
+                force += Vector2.right * (wallHit.normal.x > 0.0f ? 1 : -1) * wallJumpForce;
+                body.velocity += force;
+            }
         }
 
         private void Collide()
@@ -183,6 +222,7 @@ namespace SquareUp.Runtime.Player
 
             Collide(Vector2.up, new Vector2(0.0f, offset.y + size.y * 0.5f - 0.25f), Vector2.zero, 0.25f, 1);
 
+            isOnWall = false;
             CheckForWall(1);
             CheckForWall(-1);
         }
