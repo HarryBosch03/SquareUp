@@ -1,5 +1,8 @@
+using System;
+using SquareUp.Runtime.Weapons;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using Random = UnityEngine.Random;
 
 namespace SquareUp.Runtime.Player
 {
@@ -19,43 +22,61 @@ namespace SquareUp.Runtime.Player
         public float jumpHeight = 2.0f;
         public float upGravity = 2.0f;
         public float downGravity = 3.0f;
-        
+
         [Space]
         public Vector2 collisionOffset = new(0.0f, 0.5f);
         public Vector2 collisionSize = new(0.5f, 1.0f);
         public LayerMask collisionMask = ~0;
 
         [Space]
+        public Projectile projectilePrefab;
+        public float fireDelay = 0.1f;
+        public int projectilesPerShot = 1;
+        public float spray = 2.0f;
+
+        [Space]
         [Range(0.0f, 1.0f)]
         public float animationSmoothing;
 
         private Rigidbody2D body;
+        private Animator animator;
 
         private InputAction moveAction;
         private InputAction jumpAction;
+        private InputAction shootAction;
 
         private bool jumpFlag;
         private bool isOnGround;
         private RaycastHit2D groundHit;
-        
+        private bool isOnWall;
+        private RaycastHit2D wallHit;
+
         private float rotation;
         private Transform visuals;
         private Transform head;
+        private Transform leftArm;
+        private Transform muzzle;
 
         private Vector2 lookPosition;
         private Camera mainCam;
-        
+
+        private float lastFireTime;
+
         private void Awake()
         {
             body = GetComponent<Rigidbody2D>();
+            animator = GetComponent<Animator>();
             mainCam = Camera.main;
-            
+
             visuals = transform.Find("Visuals");
             head = visuals.Find("Head");
+            leftArm = visuals.Find("Arm.L");
+            muzzle = visuals.Find("Arm.L/Gun/Muzzle");
 
             inputAsset.Enable();
             moveAction = inputAsset.FindAction("Move");
             jumpAction = inputAsset.FindAction("Jump");
+            shootAction = inputAsset.FindAction("Shoot");
 
             foreach (var t in GetComponentsInChildren<Transform>())
             {
@@ -67,6 +88,7 @@ namespace SquareUp.Runtime.Player
         {
             Move();
             Jump();
+            Shoot();
             Collide();
             SetGravity();
 
@@ -76,26 +98,42 @@ namespace SquareUp.Runtime.Player
             jumpFlag = false;
         }
 
-        private void SetGravity()
+        private void Shoot()
         {
-            body.gravityScale = body.velocity.y > 0.0f ? upGravity : downGravity;
+            if (!shootAction.IsPressed()) return;
+            if (Time.time - lastFireTime < fireDelay) return;
+
+            for (var i = 0; i < projectilesPerShot; i++)
+            {
+                var rotation = muzzle.eulerAngles.z + Random.Range(-spray, spray);
+                Instantiate(projectilePrefab, muzzle.position, Quaternion.Euler(0.0f, 0.0f, rotation));
+            }
+
+            lastFireTime = Time.time;
         }
+
+        private void SetGravity() { body.gravityScale = body.velocity.y > 0.0f ? upGravity : downGravity; }
 
         private void Update()
         {
             if (jumpAction.WasPerformedThisFrame()) jumpFlag = true;
-            
-            Animate();
-
             lookPosition = GetMousePosition();
         }
+
+        private void LateUpdate() { Animate(); }
 
         private void Animate()
         {
             visuals.rotation = Quaternion.Euler(0.0f, rotation * 90.0f - 90.0f, 0.0f);
 
             var headDir = lookPosition - (Vector2)head.position;
-            head.transform.rotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(headDir.y, headDir.x) * Mathf.Rad2Deg + (rotation * 90.0f - 90.0f)) * visuals.rotation;
+            head.transform.localRotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(headDir.y, Mathf.Abs(headDir.x)) * Mathf.Rad2Deg * 0.6f);
+
+            var armDir = lookPosition - (Vector2)leftArm.position;
+            leftArm.transform.rotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(armDir.y, armDir.x) * Mathf.Rad2Deg + 90.0f) * visuals.rotation;
+
+            animator.SetBool("falling", !isOnGround);
+            animator.SetFloat("movement", isOnGround ? body.velocity.x / moveSpeed : 0.0f);
         }
 
         private Vector2 GetMousePosition() => mainCam.ScreenToWorldPoint(Mouse.current.position.ReadValue());
@@ -115,10 +153,10 @@ namespace SquareUp.Runtime.Player
             {
                 force = Mathf.Clamp(target - body.velocity.x, -moveSpeed, moveSpeed) * acceleration * (1.0f - airMovementPenalty) * Mathf.Abs(input.x);
             }
-            
+
             body.velocity += Vector2.right * force * Time.deltaTime;
         }
-        
+
         private void Jump()
         {
             if (!jumpFlag) return;
@@ -144,11 +182,31 @@ namespace SquareUp.Runtime.Player
             offset.y += stepHeight * 0.5f;
 
             Collide(Vector2.up, new Vector2(0.0f, offset.y + size.y * 0.5f - 0.25f), Vector2.zero, 0.25f, 1);
-            
-            Collide(Vector2.right, new Vector2(0.0f, offset.y), Vector2.up * size.y, size.x * 0.5f);
-            Collide(Vector2.left,  new Vector2(0.0f, offset.y), Vector2.up * size.y, size.x * 0.5f);
+
+            CheckForWall(1);
+            CheckForWall(-1);
         }
-        
+
+        private void CheckForWall(int direction)
+        {
+            var iterations = 16;
+            for (var i = 0; i < iterations; i++)
+            {
+                var position = body.position;
+                var offset = Vector2.up * ((i / (iterations - 1.0f) - 0.5f) * (collisionSize.y - stepHeight) + collisionOffset.y + stepHeight * 0.5f);
+
+                var castDistance = collisionSize.x * 0.5f;
+                var hit = Physics2D.Raycast(position + offset, Vector2.right * direction, castDistance, collisionMask);
+                if (!hit) continue;
+
+                wallHit = hit;
+                isOnWall = true;
+                body.position += Vector2.right * (castDistance - hit.distance) * -direction;
+                body.velocity += Vector2.right * direction * Mathf.Min(0.0f, -body.velocity.x * direction);
+            }
+        }
+
+
         private void Collide(Vector2 direction, Vector2 offset, Vector2 spread, float distance, int iterations = 16)
         {
             for (var i = 0; i < iterations; i++)
@@ -158,10 +216,9 @@ namespace SquareUp.Runtime.Player
 
                 var start = position + offset + localOffset;
                 var hit = Physics2D.Raycast(start, direction, distance, collisionMask);
-                Debug.DrawRay(start, direction * distance, groundHit ? Color.green : Color.red);
                 if (!hit) continue;
 
-                body.position -= direction * (distance - hit.distance); 
+                body.position -= direction * (distance - hit.distance);
                 body.velocity += direction * Mathf.Min(0.0f, Vector2.Dot(-body.velocity, direction));
             }
         }
@@ -174,17 +231,18 @@ namespace SquareUp.Runtime.Player
                 return;
             }
 
-            for (var i = 0; i < 16; i++)
+            var iterations = 6;
+            for (var i = 0; i < iterations; i++)
             {
-                var position = body.position + (Vector2.up * body.velocity.y * Time.deltaTime);
-                var offset = Vector2.right * ((i / 15.0f - 0.5f) * collisionSize.x + collisionOffset.x) * 0.9f;
+                var position = body.position + Vector2.up * body.velocity.y * Time.deltaTime;
+                var offset = Vector2.right * ((i / (iterations - 1.0f) - 0.5f) * collisionSize.x + collisionOffset.x) * 0.9f;
 
-                groundHit = Physics2D.Raycast(position + offset + Vector2.up * stepHeight, Vector2.down, stepHeight, collisionMask);
-                Debug.DrawRay(position + offset + Vector2.up * stepHeight, Vector2.down * stepHeight, groundHit ? Color.green : Color.red);
-                if (!groundHit) continue;
+                var hit = Physics2D.Raycast(position + offset + Vector2.up * stepHeight, Vector2.down, stepHeight, collisionMask);
+                if (!hit) continue;
 
+                groundHit = hit;
                 isOnGround = true;
-                body.position += Vector2.up * (groundHit.point.y - body.position.y); 
+                body.position += Vector2.up * (groundHit.point.y - body.position.y);
                 body.velocity += Vector2.up * Mathf.Max(0.0f, -body.velocity.y);
             }
         }
