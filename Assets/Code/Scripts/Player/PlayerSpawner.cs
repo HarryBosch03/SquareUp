@@ -7,7 +7,7 @@ namespace SquareUp.Runtime.Player
 {
     public class PlayerSpawner : MonoBehaviour
     {
-        public PlayerController playerPrefab;
+        public GameObject playerPrefab;
         public InputAction joinAction;
 
         public List<InputDevice> trackedDevices = new();
@@ -35,7 +35,11 @@ namespace SquareUp.Runtime.Player
         private void SpawnPlayerWithDevice(InputDevice device)
         {
             var instance = Instantiate(playerPrefab);
-            instance.BindInput(device);
+            var inputProvider = instance.GetComponent<PlayerInputProvider>();
+            if (inputProvider)
+            {
+                inputProvider.BindInput(device);
+            }
         }
     }
 }

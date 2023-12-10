@@ -7,6 +7,8 @@ namespace SquareUp.Runtime.Weapons
     [DisallowMultipleComponent]
     public class Projectile : MonoBehaviour
     {
+        private const float FallHeight = 0.5f;
+        
         public int damage;
         public float speed = 30.0f;
         public float lifetime = 10.0f;
@@ -19,6 +21,7 @@ namespace SquareUp.Runtime.Weapons
         private float age;
         private float distanceTraveled;
         private Transform trail;
+        private Transform shadow;
 
         private Vector2 position;
         private Vector2 velocity;
@@ -27,6 +30,7 @@ namespace SquareUp.Runtime.Weapons
         private void Awake()
         {
             trail = transform.Find("Trail");
+            shadow = transform.Find("Shadow");
         }
 
         private void Start()
@@ -41,6 +45,13 @@ namespace SquareUp.Runtime.Weapons
             Iterate();
             
             transform.rotation = Quaternion.Euler(0.0f, 0.0f, Mathf.Atan2(velocity.y, velocity.x) * Mathf.Rad2Deg);
+        }
+
+        private void Update()
+        {
+            var x = age / lifetime;
+            shadow.position = transform.position + Vector3.down * (1.0f - x * x);
+            shadow.localRotation = Quaternion.identity;
         }
 
         private void Collide()
@@ -61,11 +72,7 @@ namespace SquareUp.Runtime.Weapons
             Debug.DrawRay(start, direction * step, Color.red);
             if (!hit) return;
 
-            if (hitFx)
-            {
-                Instantiate(hitFx, hit.point, Vector2.Reflect(direction, hit.normal).AsRotation());
-            }
-            Destroy();
+            Destroy(hit.point, Vector2.Reflect(direction, hit.normal));
         }
 
         private void Iterate()
@@ -75,18 +82,23 @@ namespace SquareUp.Runtime.Weapons
 
             distanceTraveled += velocity.magnitude * Time.deltaTime;
 
-            force = Physics.gravity;
+            force = Vector2.down * 2.0f * FallHeight / (lifetime * lifetime);
             transform.position = position;
 
             age += Time.deltaTime;
             if (age > lifetime)
             {
-                Destroy();
+                Destroy(position, velocity.normalized);
             }
         }
 
-        private void Destroy()
+        private void Destroy(Vector2 point, Vector2 direction)
         {
+            if (hitFx)
+            {
+                Instantiate(hitFx, point, direction.AsRotation());
+            }
+            
             if (trail)
             {
                 trail.SetParent(null);

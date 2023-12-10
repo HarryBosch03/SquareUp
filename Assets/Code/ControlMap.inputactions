@@ -24,7 +24,7 @@
                     "initialStateCheck": true
                 },
                 {
-                    "name": "Jump",
+                    "name": "Roll",
                     "type": "Button",
                     "id": "f58b4b30-2647-4b78-8325-2ce7d9bc4d68",
                     "expectedControlType": "Button",
@@ -50,7 +50,7 @@
                     "interactions": "",
                     "processors": "",
                     "groups": "",
-                    "action": "Jump",
+                    "action": "Roll",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },
@@ -61,7 +61,7 @@
                     "interactions": "",
                     "processors": "",
                     "groups": "",
-                    "action": "Jump",
+                    "action": "Roll",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },
@@ -72,7 +72,7 @@
                     "interactions": "",
                     "processors": "",
                     "groups": "",
-                    "action": "Jump",
+                    "action": "Roll",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },
@@ -83,7 +83,7 @@
                     "interactions": "",
                     "processors": "",
                     "groups": "",
-                    "action": "Jump",
+                    "action": "Roll",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },
